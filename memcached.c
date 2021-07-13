@@ -674,7 +674,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
     // This must be NULL if TLS is not enabled.
     assert(ssl == NULL);
 #endif
-    {
+    {  // 设置读写发送消息的函数指针
         c->read = tcp_read;
         c->sendmsg = tcp_sendmsg;
         c->write = tcp_write;
@@ -704,7 +704,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
         }
     }
 
-    event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
+    event_set(&c->event, sfd, event_flags, event_handler, (void *)c);   // 对该连接的fd注册事件到该线程的event_base
     event_base_set(base, &c->event);
     c->ev_flags = event_flags;
 
@@ -2715,7 +2715,7 @@ static bool update_event(conn *c, const int new_flags) {
 void do_accept_new_conns(const bool do_accept) {
     conn *next;
 
-    for (next = listen_conn; next; next = next->next) {
+    for (next = listen_conn; next; next = next->next) {  // 这里的作用是更新下一个conn为listen事件
         if (do_accept) {
             update_event(next, EV_READ | EV_PERSIST);
             if (listen(next->sfd, settings.backlog) != 0) {
@@ -3179,7 +3179,7 @@ static void drive_machine(conn *c) {
     while (!stop) {
 
         switch(c->state) {
-        case conn_listening:
+        case conn_listening:   // conn是listen状态，accept之后，为连接fd分配新的conn_item，放入conn_queue，为其配置状态为conn_new_cmd
             addrlen = sizeof(addr);
 #ifdef HAVE_ACCEPT4
             if (use_accept4) {
@@ -3190,7 +3190,7 @@ static void drive_machine(conn *c) {
 #else
             sfd = accept(c->sfd, (struct sockaddr *)&addr, &addrlen);
 #endif
-            if (sfd == -1) {
+            if (sfd == -1) { // 如果接受失败会设置新的listen conn
                 if (use_accept4 && errno == ENOSYS) {
                     use_accept4 = 0;
                     continue;
@@ -3219,7 +3219,7 @@ static void drive_machine(conn *c) {
             }
 
             bool reject;
-            if (settings.maxconns_fast) {
+            if (settings.maxconns_fast) {  // 连接过载
                 STATS_LOCK();
                 reject = stats_state.curr_conns + stats_state.reserved_fds >= settings.maxconns - 1;
                 if (reject) {
@@ -3230,7 +3230,7 @@ static void drive_machine(conn *c) {
                 reject = false;
             }
 
-            if (reject) {
+            if (reject) {  // 过载后发送错误信息给请求端
                 str = "ERROR Too many open connections\r\n";
                 res = write(sfd, str, strlen(str));
                 close(sfd);
@@ -3277,7 +3277,7 @@ static void drive_machine(conn *c) {
                 }
                 ssl_v = (void*) ssl;
 #endif
-
+                // 为连接fd分配新的cq_item，并push到conn_queue,状态是conn_new_cmd
                 dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,
                                      READ_BUFFER_CACHED, c->transport, ssl_v);
             }
@@ -3594,7 +3594,7 @@ void event_handler(const evutil_socket_t fd, const short which, void *arg) {
         return;
     }
 
-    drive_machine(c);
+    drive_machine(c); // 状态机
 
     /* wait for next event */
     return;
@@ -6092,7 +6092,7 @@ int main (int argc, char **argv) {
     event_config_free(ev_config);
 #else
     /* Otherwise, use older API */
-    main_base = event_init();
+    main_base = event_init();  // libevent库初始化event_base
 #endif
 
     /* Load initial auth file if required */
@@ -6123,7 +6123,7 @@ int main (int argc, char **argv) {
 
     /* initialize other stuff */
     stats_init();
-    logger_init();
+    logger_init();  // 启动了线程，在内部还会执行poll,不知道用来干啥
     conn_init();
     bool reuse_mem = false;
     void *mem_base = NULL;
@@ -6156,7 +6156,7 @@ int main (int argc, char **argv) {
     }
 #endif
     slabs_init(settings.maxbytes, settings.factor, preallocate,
-            use_slab_sizes ? slab_sizes : NULL, mem_base, reuse_mem);
+            use_slab_sizes ? slab_sizes : NULL, mem_base, reuse_mem);  // slabclass初始化，为所有的slabclass预分配一个slab，这里预分配是从堆空间分的，因为0号slabclass还没有slab
 #ifdef EXTSTORE
     if (storage_file) {
         enum extstore_res eres;
@@ -6192,7 +6192,7 @@ int main (int argc, char **argv) {
     }
 
     if (prefill)
-        slabs_prefill_global();
+        slabs_prefill_global();  // 0号slabclass预分配内存
     /* In restartable mode and we've decided to issue a fixup on memory */
     if (memory_file != NULL && reuse_mem) {
         mc_ptr_t old_base = meta->old_base;
@@ -6204,7 +6204,7 @@ int main (int argc, char **argv) {
         // pointers? passing through uint64_t should work, and we're not
         // annotating the pointer with anything, but it's still slightly
         // insane.
-        restart_fixup((void *)old_base);
+        restart_fixup((void *)old_base);  // 恢复共享内存中的数据，这个暂时先不看，不是主流程
     }
     /*
      * ignore SIGPIPE signals; we can use errno == EPIPE if we
@@ -6224,10 +6224,10 @@ int main (int argc, char **argv) {
     init_lru_crawler(NULL);
 #endif
 
-    if (start_assoc_maint && start_assoc_maintenance_thread() == -1) {
+    if (start_assoc_maint && start_assoc_maintenance_thread() == -1) { // item bucket rehash
         exit(EXIT_FAILURE);
     }
-    if (start_lru_crawler && start_item_crawler_thread() != 0) {
+    if (start_lru_crawler && start_item_crawler_thread() != 0) {  // lru爬虫，用来清理过期item的
         fprintf(stderr, "Failed to enable LRU crawler thread\n");
         exit(EXIT_FAILURE);
     }

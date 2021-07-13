@@ -217,11 +217,11 @@ void slabs_init(const size_t limit, const double factor, const bool prealloc, co
     mem_limit = limit;
 
     if (prealloc && mem_base_external == NULL) {
-        mem_base = alloc_large_chunk(mem_limit);
+        mem_base = alloc_large_chunk(mem_limit);  // 提前分配memcache启动时指定的可以使用的最大内存
         if (mem_base) {
             do_slab_prealloc = true;
             mem_current = mem_base;
-            mem_avail = mem_limit;
+            mem_avail = mem_limit;  // 全局静态变量，用在当前文件，记录还可以使用的内存大小
         } else {
             fprintf(stderr, "Warning: Failed to allocate requested memory in"
                     " one large chunk.\nWill allocate in smaller chunks\n");
@@ -243,9 +243,9 @@ void slabs_init(const size_t limit, const double factor, const bool prealloc, co
         }
     }
 
-    memset(slabclass, 0, sizeof(slabclass));
+    memset(slabclass, 0, sizeof(slabclass));  // slabclass是全局静态数组，大小是64
 
-    while (++i < MAX_NUMBER_OF_SLAB_CLASSES-1) {
+    while (++i < MAX_NUMBER_OF_SLAB_CLASSES-1) {  // 只初始化1-63，0不弄
         if (slab_sizes != NULL) {
             if (slab_sizes[i-1] == 0)
                 break;
@@ -257,10 +257,10 @@ void slabs_init(const size_t limit, const double factor, const bool prealloc, co
         if (size % CHUNK_ALIGN_BYTES)
             size += CHUNK_ALIGN_BYTES - (size % CHUNK_ALIGN_BYTES);
 
-        slabclass[i].size = size;
-        slabclass[i].perslab = settings.slab_page_size / slabclass[i].size;
+        slabclass[i].size = size;  // 当前slab中item的大小
+        slabclass[i].perslab = settings.slab_page_size / slabclass[i].size; // 每个slab最多可以存放多少个item
         if (slab_sizes == NULL)
-            size *= factor;
+            size *= factor;  // factor是增长因子，增长后的长度还要进行8字节对齐
         if (settings.verbose > 1) {
             fprintf(stderr, "slab class %3d: chunk size %9u perslab %7u\n",
                     i, slabclass[i].size, slabclass[i].perslab);
@@ -268,7 +268,7 @@ void slabs_init(const size_t limit, const double factor, const bool prealloc, co
     }
 
     power_largest = i;
-    slabclass[power_largest].size = settings.slab_chunk_size_max;
+    slabclass[power_largest].size = settings.slab_chunk_size_max;  // 最大的item_size（chunk_size）,好像是1M
     slabclass[power_largest].perslab = settings.slab_page_size / settings.slab_chunk_size_max;
     if (settings.verbose > 1) {
         fprintf(stderr, "slab class %3d: chunk size %9u perslab %7u\n",
@@ -288,7 +288,7 @@ void slabs_init(const size_t limit, const double factor, const bool prealloc, co
     }
 
     if (do_slab_prealloc) {
-        if (!reuse_mem) {
+        if (!reuse_mem) {  // 除0以外所有的slabclass都预分配一个slab,并完成空闲item分割，存放到slots链表中
             slabs_preallocate(power_largest);
         }
     }
@@ -357,7 +357,7 @@ static void split_slab_page_into_freelist(char *ptr, const unsigned int id) {
 /* Fast FIFO queue */
 static void *get_page_from_global_pool(void) {
     slabclass_t *p = &slabclass[SLAB_GLOBAL_PAGE_POOL];
-    if (p->slabs < 1) {
+    if (p->slabs < 1) { // 0号slabclass已经没有slab了
         return NULL;
     }
     char *ret = p->slab_list[p->slabs - 1];
@@ -367,7 +367,7 @@ static void *get_page_from_global_pool(void) {
 
 static int do_slabs_newslab(const unsigned int id) {
     slabclass_t *p = &slabclass[id];
-    slabclass_t *g = &slabclass[SLAB_GLOBAL_PAGE_POOL];
+    slabclass_t *g = &slabclass[SLAB_GLOBAL_PAGE_POOL]; // 0号slabclass，其他slabcalss的slab就是从这个slabclass分配的
     int len = (settings.slab_reassign || settings.slab_chunk_size_max != settings.slab_page_size)
         ? settings.slab_page_size
         : p->size * p->perslab;
@@ -380,9 +380,9 @@ static int do_slabs_newslab(const unsigned int id) {
         return 0;
     }
 
-    if ((grow_slab_list(id) == 0) ||
-        (((ptr = get_page_from_global_pool()) == NULL) &&
-        ((ptr = memory_allocate((size_t)len)) == 0))) {
+    if ((grow_slab_list(id) == 0) ||  // 判断该slabclass是否需要扩展slablist(用来记录该slabclass所有的slab)
+        (((ptr = get_page_from_global_pool()) == NULL) &&  // 首先是从0号slabclass分配slab
+        ((ptr = memory_allocate((size_t)len)) == 0))) {  // 如果0号slabclass没有的话就从系统空间分配内存
 
         MEMCACHED_SLABS_SLABCLASS_ALLOCATE_FAILED(id);
         return 0;
@@ -393,9 +393,9 @@ static int do_slabs_newslab(const unsigned int id) {
     // wiping memory as it's being pulled out of the global pool instead of
     // blocking startup all at once.
     memset(ptr, 0, (size_t)len);
-    split_slab_page_into_freelist(ptr, id);
+    split_slab_page_into_freelist(ptr, id);  // 将slab按照该slabclass的trunk_size分割，存放在slots链表中，分割时插入链表是头插法
 
-    p->slab_list[p->slabs++] = ptr;
+    p->slab_list[p->slabs++] = ptr;  // slabcalss的slab_list数组中记录该slab的首地址
     MEMCACHED_SLABS_SLABCLASS_ALLOCATE(id);
 
     return 1;

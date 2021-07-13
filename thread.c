@@ -264,7 +264,7 @@ void stop_threads(void) {
  * Initializes a connection queue.
  */
 static void cq_init(CQ *cq) {
-    pthread_mutex_init(&cq->lock, NULL);
+    pthread_mutex_init(&cq->lock, NULL);  // ??为什么要加锁，每个工作线程都有这个
     cq->head = NULL;
     cq->tail = NULL;
 }
@@ -394,7 +394,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
     me->base = event_base_new_with_config(ev_config);
     event_config_free(ev_config);
 #else
-    me->base = event_init();
+    me->base = event_init();  // 每个工作线程都有自己单独的一套event_base
 #endif
 
     if (! me->base) {
@@ -403,7 +403,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
     }
 
     /* Listen for notifications from other threads */
-    event_set(&me->notify_event, me->notify_receive_fd,
+    event_set(&me->notify_event, me->notify_receive_fd,   // 对pipe的读端设置事件，并注册到该线程的event_base
               EV_READ | EV_PERSIST, thread_libevent_process, me);
     event_base_set(me->base, &me->notify_event);
 
@@ -412,7 +412,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         exit(1);
     }
 
-    me->new_conn_queue = malloc(sizeof(struct conn_queue));
+    me->new_conn_queue = malloc(sizeof(struct conn_queue));    // 每个线程都有一个new_conn_queue
     if (me->new_conn_queue == NULL) {
         perror("Failed to allocate memory for connection queue");
         exit(EXIT_FAILURE);
@@ -424,14 +424,14 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         exit(EXIT_FAILURE);
     }
 
-    me->rbuf_cache = cache_create("rbuf", READ_BUFFER_SIZE, sizeof(char *), NULL, NULL);
+    me->rbuf_cache = cache_create("rbuf", READ_BUFFER_SIZE, sizeof(char *), NULL, NULL);  // 分配读buffer
     if (me->rbuf_cache == NULL) {
         fprintf(stderr, "Failed to create read buffer cache\n");
         exit(EXIT_FAILURE);
     }
     // Note: we were cleanly passing in num_threads before, but this now
     // relies on settings globals too much.
-    if (settings.read_buf_mem_limit) {
+    if (settings.read_buf_mem_limit) {  // 每个工作线程的读buffer大小有限制
         int limit = settings.read_buf_mem_limit / settings.num_threads;
         if (limit < READ_BUFFER_SIZE) {
             limit = 1;
@@ -468,8 +468,8 @@ static void *worker_libevent(void *arg) {
     /* Any per-thread setup can happen here; memcached_thread_init() will block until
      * all threads have finished initializing.
      */
-    me->l = logger_create();
-    me->lru_bump_buf = item_lru_bump_buf_create();
+    me->l = logger_create();  // 日志模块
+    me->lru_bump_buf = item_lru_bump_buf_create();  // 线程的item_lru管理
     if (me->l == NULL || me->lru_bump_buf == NULL) {
         abort();
     }
@@ -478,12 +478,12 @@ static void *worker_libevent(void *arg) {
         drop_worker_privileges();
     }
 
-    register_thread_initialized();
+    register_thread_initialized();  // 初始化锁和信号量
 
-    event_base_loop(me->base, 0);
+    event_base_loop(me->base, 0);   // libevent的event轮训函数，这里就是在不断的epoll_wait
 
     // same mechanism used to watch for all threads exiting.
-    register_thread_initialized();
+    register_thread_initialized();  // 释放锁
 
     event_base_free(me->base);
     return NULL;
@@ -508,8 +508,8 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
     }
 
     switch (buf[0]) {
-    case 'c':
-        item = cq_pop(me->new_conn_queue);
+    case 'c':  //连接事件
+        item = cq_pop(me->new_conn_queue); // 从new_conn_queue中pop一个待处理的事件
 
         if (NULL == item) {
             break;
@@ -518,7 +518,7 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
             case queue_new_conn:
                 c = conn_new(item->sfd, item->init_state, item->event_flags,
                                    item->read_buffer_size, item->transport,
-                                   me->base, item->ssl);
+                                   me->base, item->ssl);  //
                 if (c == NULL) {
                     if (IS_UDP(item->transport)) {
                         fprintf(stderr, "Can't listen for events on UDP socket\n");
@@ -615,7 +615,7 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
 
     MEMCACHED_CONN_DISPATCH(sfd, (int64_t)thread->thread_id);
     buf[0] = 'c';
-    if (write(thread->notify_send_fd, buf, 1) != 1) {
+    if (write(thread->notify_send_fd, buf, 1) != 1) { // 写pipe
         perror("Writing to thread notify pipe");
     }
 }
@@ -860,7 +860,7 @@ void memcached_thread_init(int nthreads, void *arg) {
     int         i;
     int         power;
 
-    for (i = 0; i < POWER_LARGEST; i++) {
+    for (i = 0; i < POWER_LARGEST; i++) {  // 启动了256个lru锁，这个锁是干什么的？？？？
         pthread_mutex_init(&lru_locks[i], NULL);
     }
     pthread_mutex_init(&worker_hang_lock, NULL);
@@ -868,7 +868,7 @@ void memcached_thread_init(int nthreads, void *arg) {
     pthread_mutex_init(&init_lock, NULL);
     pthread_cond_init(&init_cond, NULL);
 
-    pthread_mutex_init(&cqi_freelist_lock, NULL);
+    pthread_mutex_init(&cqi_freelist_lock, NULL);  // free conn_queue_item锁
     cqi_freelist = NULL;
 
     /* Want a wide lock table, but don't waste memory */
@@ -912,25 +912,25 @@ void memcached_thread_init(int nthreads, void *arg) {
         exit(1);
     }
 
-    for (i = 0; i < nthreads; i++) {
+    for (i = 0; i < nthreads; i++) { 
         int fds[2];
         if (pipe(fds)) {
             perror("Can't create notify pipe");
             exit(1);
         }
 
-        threads[i].notify_receive_fd = fds[0];
-        threads[i].notify_send_fd = fds[1];
+        threads[i].notify_receive_fd = fds[0]; // 读端，应该是被通知有请求过来
+        threads[i].notify_send_fd = fds[1];  // 写端，应该是用来通知别人请求已完成
 #ifdef EXTSTORE
         threads[i].storage = arg;
 #endif
-        setup_thread(&threads[i]);
+        setup_thread(&threads[i]);  //分配buf,分配new_conn_queue，为读pipe端设置回调函数
         /* Reserve three fds for the libevent base, and two for the pipe */
         stats_state.reserved_fds += 5;
     }
 
     /* Create threads after we've done all the libevent setup. */
-    for (i = 0; i < nthreads; i++) {
+    for (i = 0; i < nthreads; i++) {  //创建worker线程
         create_worker(worker_libevent, &threads[i]);
     }
 
